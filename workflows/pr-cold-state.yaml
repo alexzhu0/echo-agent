@@ -1,0 +1,212 @@
+name: pr-cold-state
+description: |
+  Echo's cold-state PR pipeline. I run this on any upstream repo I have
+  zero merged PRs on. My contributions are ranked below community-network
+  PRs at equal or higher quality, so the cost of a silently-passed PR is
+  high (queue noise, no learning signal). This workflow enforces a
+  6-condition SUBMIT GATE that must pass before any code goes upstream.
+
+  Source: methodology/pr-contribution.md + wiki/lessons/L1..L10.md,
+  derived from my first 28 days on hermes-agent (15 PRs, 0 direct merges,
+  documented in journal/2026-04_to_05_hermes-agent/).
+
+  Output ratio: 80% triage / 20% PR while cold; shifts to 40/60 once
+  warming, 20/80 once established.
+
+start: align
+
+nodes:
+  align:
+    task: |
+      Confirm scope before touching anything:
+      - State the user's actual goal in one sentence.
+      - Confirm repo relationship state: cold | warming | established.
+        - cold = no prior merges AND not in repo's AUTHOR_MAP / .mailmap.
+        - If cold, this workflow applies. If warming/established, switch to
+          the standard pr-warming workflow instead.
+      - Confirm output ratio for this session: cold = 80% triage / 20% PR.
+    next: followup
+
+  followup:
+    task: |
+      Before any new work, sweep existing PRs in flight:
+      - For each open PR you authored: run SupersessionDetector.
+        - git log <last_fetch>..upstream/main -- <touched_files>
+        - gh pr list --state open --search '<touched_files> in:diff'
+        - merge-tree upstream/main HEAD → conflicts?
+      - Close any PR that's superseded by an upstream commit or stronger
+        open PR. Use closure-with-credit comment shape.
+      - Rebase any PR that went DIRTY but isn't superseded.
+      - Skip to find_work only after the queue is review-ready.
+    branches:
+      - condition: queue is clean
+        next: find_work
+      - condition: at least one PR superseded or conflicted
+        next: cleanup
+
+  cleanup:
+    task: |
+      Close superseded PRs and rebase DIRTY ones:
+      - Closure comment: name the superseding commit/PR + explain why
+        the other shape is preferred (broader sweep, cleaner mechanism,
+        etc). Never claim "duplicate" without evidence.
+      - Rebase commit: merge upstream/main, resolve conflicts preserving
+        BOTH the maintainer's recent intent AND your own change semantics.
+        Post a short comment naming what conflicted and how.
+      - One PR per session for these mechanics — don't bulk-close more
+        than 1 without explicit user signoff (auto-mode safety).
+    next: find_work
+
+  find_work:
+    task: |
+      Scan for candidate issues (cold-state weight: 80% time here):
+      - gh issue list --label P0 --label P1 --label type/bug
+        --created '>=14d ago' --no-assignee
+      - For each candidate, run IssuePremiseValidator:
+        - Is reporter human? (check last 5 issues for AI-template shape)
+        - Has reporter self-closed an issue NOT_PLANNED in last 7d?
+        - Does body have first-person symptom + repro?
+        - If ai_generated: 24h wait before considering further.
+      - Tag each candidate with: human | mixed | ai_generated.
+    branches:
+      - condition: at least 1 human candidate found
+        next: pr_gate
+      - condition: only triage opportunities exist
+        next: triage
+
+  triage:
+    task: |
+      Triage track — the dominant lever for cold-state repos:
+      - Pick issues where multiple PRs exist OR diagnosis is unclear.
+      - For each: verify file paths at named SHA, run the repro, post ONE
+        factually-grounded comment.
+      - Triage comment shapes (in preference order):
+        1. Cross-reference table comparing competing PRs by approach,
+           scope, risk surface, test coverage.
+        2. Scope-creep flag: PR claims to fix A but also touches B —
+           suggest split per CONTRIBUTING.md.
+        3. Mechanism vs symptom analysis: this PR routes around the
+           symptom; that PR detects the condition. Compare risk
+           coverage of both.
+        4. Reproduction confirmation: "Confirmed at HEAD <SHA>;
+           <file>:<line> shows <observed behavior>."
+      - HARD RULES:
+        - All file paths and line numbers verified at the named SHA.
+          False cross-references are net-negative for relationship state.
+        - One comment per issue/PR per session. No follow-up unless
+          the reporter @-mentions you.
+        - No "duplicate of" claims without reading both threads fully.
+        - Never auto-pick winner between competing PRs — surface the
+          tradeoff for the maintainer's design call.
+      - Daily cap: 5 high-quality triage comments. Quality > quantity.
+    next: reflect
+
+  pr_gate:
+    task: |
+      SUBMIT GATE — all 6 must pass before any code is written:
+
+      1. Issue is human-reported (IssuePremiseValidator → human, confidence ≥ 0.7).
+      2. Bug-at-HEAD repro succeeded with concrete failing test or one-liner.
+      3. Mechanism-level fix (detects the actual condition vs routes around
+         a symptom). Allowlist / path-routing approaches score -2 and fail.
+      4. No competitor PR open AND upstream has not silently fixed in last
+         7 days of commits on the touched files.
+      5. Maintainer has commit on at least one touched file in last 14 days
+         OR issue carries a maintainer's reaction. Out-of-vision code is
+         a low-leverage target on cold repos.
+      6. Diff ≤ 100 lines including tests.
+
+      Decision:
+      - 6/6: proceed to study.
+      - 5/6: proceed with explicit caveat in PR body naming the missed gate.
+      - ≤4/6: switch back to triage on this issue.
+    branches:
+      - condition: 5/6 or 6/6 pass
+        next: study
+      - condition: 4/6 or fewer pass
+        next: triage
+
+  study:
+    task: |
+      Read the affected code at HEAD:
+      - Read the full module touched (not just the failing function).
+      - Read CONTRIBUTING.md sections relevant to the change (commit
+        format, dependency policy, test conventions, scope rules).
+      - Read AGENTS.md if present (project-specific agent norms).
+      - Read the last 5 merged PRs touching the same area to learn the
+        accepted shape of fixes here.
+    next: plan
+
+  plan:
+    task: |
+      Plan the change in 3-5 bullets BEFORE writing code:
+      - Exact function(s) to change.
+      - Test(s) to add — name them, name the assertion shape.
+      - Files that must NOT change (scope discipline).
+      - Risk: list 1-2 things that could regress, name how the test
+        catches them.
+      - PR body draft: what / why / how-to-test / platforms tested /
+        related issues.
+    next: implement
+
+  implement:
+    task: |
+      Write the change + the test:
+      - Test first, watch it fail with the right shape.
+      - Smallest possible diff. No unrelated cleanup.
+      - No emoji. No "added for clarity" comments. Only comments where
+        the WHY is non-obvious.
+      - Mirror the project's existing patterns (look at recent commits
+        touching the same area).
+    next: validate
+
+  validate:
+    task: |
+      Targeted local validation:
+      - Run the new test alone — it passes now, would have failed before.
+      - Run the full test file the change lives in.
+      - Run any test files that import or depend on the changed module.
+      - Confirm zero scope creep: `git diff --stat` matches the plan's
+        file list exactly.
+    branches:
+      - condition: all targeted tests pass + diff matches plan
+        next: submit
+      - condition: tests fail or diff drifted
+        next: implement
+
+  submit:
+    task: |
+      Open the PR:
+      - Conventional commit message: <type>(<scope>): <summary>.
+        Scopes from repo's last 50 merged commits, not invented.
+      - PR body: what / why / how-to-test / platforms tested / related
+        issues. State explicitly which CONTRIBUTING.md sections you
+        followed.
+      - If 5/6 gates passed (not 6/6), name the missed gate in the body
+        with rationale ("Touches files maintainer hasn't edited in 30d,
+        but the issue is P1 with a clean repro").
+      - No `--no-verify`, no force-push, no skipping hooks.
+    next: verify
+
+  verify:
+    task: |
+      Post-submit verification:
+      - Re-fetch upstream and confirm no new commit landed on the
+        touched files between your branch base and HEAD.
+      - Confirm CI started and the relevant jobs are running (not just
+        unrelated ones).
+      - Record the PR in OutcomeDB with: pr_number, ref, gate_score
+        (which 6 gates passed), submitted_at, tokens.
+      - Set wake-check: 24h, 72h, 7d for review signal.
+    next: reflect
+
+  reflect:
+    task: |
+      Capture lesson for next cycle:
+      - What did the GATE catch that I would have otherwise filed?
+      - What did the triage track produce that the PR track couldn't?
+      - Did any closure-with-credit comment land well?
+      - Update OutcomeDB. If a new failure pattern emerged that wasn't
+        in the GATE, propose a 7th gate and tag for review (do not
+        unilaterally add).
+    terminal: true
