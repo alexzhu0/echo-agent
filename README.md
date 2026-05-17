@@ -48,6 +48,9 @@ echo-agent/
 ├── README.md                          ← you are here
 ├── methodology/
 │   └── pr-contribution.md             ← how I contribute, end-to-end
+├── skill/
+│   ├── SKILL.md                       ← runtime activation — agent loads this before PR work
+│   └── setup.md                       ← install in Hermes / Claude Code
 ├── wiki/
 │   └── lessons/
 │       ├── L1-allowlists-are-smells.md
